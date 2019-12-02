@@ -3,10 +3,10 @@ import 'source-map-support/register';
 import Promise from 'bluebird';
 const sdk = require("../..");
 const MatrixClient = sdk.MatrixClient;
-const utils = require("../test-utils");
 
-import expect from 'expect';
-import lolex from 'lolex';
+import logger from '../../src/logger';
+
+jest.useFakeTimers();
 
 describe("MatrixClient", function() {
     const userId = "@alice:bar";
@@ -15,7 +15,6 @@ describe("MatrixClient", function() {
     let client;
     let store;
     let scheduler;
-    let clock;
 
     const KEEP_ALIVE_PATH = "/_matrix/client/versions";
 
@@ -69,7 +68,7 @@ describe("MatrixClient", function() {
             "MatrixClient[UT] RECV " + method + " " + path + "  " +
             "EXPECT " + (next ? next.method : next) + " " + (next ? next.path : next)
         );
-        console.log(logLine);
+        logger.log(logLine);
 
         if (!next) { // no more things to return
             if (pendingLookup) {
@@ -91,7 +90,7 @@ describe("MatrixClient", function() {
             return pendingLookup.promise;
         }
         if (next.path === path && next.method === method) {
-            console.log(
+            logger.log(
                 "MatrixClient[UT] Matched. Returning " +
                 (next.error ? "BAD" : "GOOD") + " response",
             );
@@ -124,24 +123,22 @@ describe("MatrixClient", function() {
     }
 
     beforeEach(function() {
-        utils.beforeEach(this); // eslint-disable-line no-invalid-this
-        clock = lolex.install();
         scheduler = [
             "getQueueForEvent", "queueEvent", "removeEventFromQueue",
             "setProcessFunction",
-        ].reduce((r, k) => { r[k] = expect.createSpy(); return r; }, {});
+        ].reduce((r, k) => { r[k] = jest.fn(); return r; }, {});
         store = [
             "getRoom", "getRooms", "getUser", "getSyncToken", "scrollback",
             "save", "wantsSave", "setSyncToken", "storeEvents", "storeRoom", "storeUser",
             "getFilterIdByName", "setFilterIdByName", "getFilter", "storeFilter",
             "getSyncAccumulator", "startup", "deleteAllData",
-        ].reduce((r, k) => { r[k] = expect.createSpy(); return r; }, {});
-        store.getSavedSync = expect.createSpy().andReturn(Promise.resolve(null));
-        store.getSavedSyncToken = expect.createSpy().andReturn(Promise.resolve(null));
-        store.setSyncData = expect.createSpy().andReturn(Promise.resolve(null));
-        store.getClientOptions = expect.createSpy().andReturn(Promise.resolve(null));
-        store.storeClientOptions = expect.createSpy().andReturn(Promise.resolve(null));
-        store.isNewlyCreated = expect.createSpy().andReturn(Promise.resolve(true));
+        ].reduce((r, k) => { r[k] = jest.fn(); return r; }, {});
+        store.getSavedSync = jest.fn().mockReturnValue(Promise.resolve(null));
+        store.getSavedSyncToken = jest.fn().mockReturnValue(Promise.resolve(null));
+        store.setSyncData = jest.fn().mockReturnValue(Promise.resolve(null));
+        store.getClientOptions = jest.fn().mockReturnValue(Promise.resolve(null));
+        store.storeClientOptions = jest.fn().mockReturnValue(Promise.resolve(null));
+        store.isNewlyCreated = jest.fn().mockReturnValue(Promise.resolve(true));
         client = new MatrixClient({
             baseUrl: "https://my.home.server",
             idBaseUrl: identityServerUrl,
@@ -153,13 +150,10 @@ describe("MatrixClient", function() {
         });
         // FIXME: We shouldn't be yanking _http like this.
         client._http = [
-            "authedRequest", "authedRequestWithPrefix", "getContentUri",
-            "request", "requestWithPrefix", "uploadContent",
-        ].reduce((r, k) => { r[k] = expect.createSpy(); return r; }, {});
-        client._http.authedRequest.andCall(httpReq);
-        client._http.authedRequestWithPrefix.andCall(httpReq);
-        client._http.requestWithPrefix.andCall(httpReq);
-        client._http.request.andCall(httpReq);
+            "authedRequest", "getContentUri", "request", "uploadContent",
+        ].reduce((r, k) => { r[k] = jest.fn(); return r; }, {});
+        client._http.authedRequest.mockImplementation(httpReq);
+        client._http.request.mockImplementation(httpReq);
 
         // set reasonable working defaults
         acceptKeepalives = true;
@@ -171,16 +165,12 @@ describe("MatrixClient", function() {
     });
 
     afterEach(function() {
-        clock.uninstall();
         // need to re-stub the requests with NOPs because there are no guarantees
         // clients from previous tests will be GC'd before the next test. This
         // means they may call /events and then fail an expect() which will fail
         // a DIFFERENT test (pollution between tests!) - we return unresolved
         // promises to stop the client from continuing to run.
-        client._http.authedRequest.andCall(function() {
-            return Promise.defer().promise;
-        });
-        client._http.authedRequestWithPrefix.andCall(function() {
+        client._http.authedRequest.mockImplementation(function() {
             return Promise.defer().promise;
         });
     });
@@ -190,10 +180,10 @@ describe("MatrixClient", function() {
         httpLookups.push(PUSH_RULES_RESPONSE);
         httpLookups.push(SYNC_RESPONSE);
         const filterId = "ehfewf";
-        store.getFilterIdByName.andReturn(filterId);
+        store.getFilterIdByName.mockReturnValue(filterId);
         const filter = new sdk.Filter(0, filterId);
         filter.setDefinition({"room": {"timeline": {"limit": 8}}});
-        store.getFilter.andReturn(filter);
+        store.getFilter.mockReturnValue(filter);
         const syncPromise = new Promise((resolve, reject) => {
             client.on("sync", function syncListener(state) {
                 if (state === "SYNCING") {
@@ -254,7 +244,7 @@ describe("MatrixClient", function() {
                 },
             });
             httpLookups.push(FILTER_RESPONSE);
-            store.getFilterIdByName.andReturn(invalidFilterId);
+            store.getFilterIdByName.mockReturnValue(invalidFilterId);
 
             const filterName = getFilterName(client.credentials.userId);
             client.store.setFilterIdByName(filterName, invalidFilterId);
@@ -286,7 +276,7 @@ describe("MatrixClient", function() {
                 if (state === "ERROR" && httpLookups.length > 0) {
                     expect(httpLookups.length).toEqual(2);
                     expect(client.retryImmediately()).toBe(true);
-                    clock.tick(1);
+                    jest.advanceTimersByTime(1);
                 } else if (state === "PREPARED" && httpLookups.length === 0) {
                     client.removeListener("sync", syncListener);
                     done();
@@ -312,9 +302,9 @@ describe("MatrixClient", function() {
                     expect(client.retryImmediately()).toBe(
                         true, "retryImmediately returned false",
                     );
-                    clock.tick(1);
+                    jest.advanceTimersByTime(1);
                 } else if (state === "RECONNECTING" && httpLookups.length > 0) {
-                    clock.tick(10000);
+                    jest.advanceTimersByTime(10000);
                 } else if (state === "SYNCING" && httpLookups.length === 0) {
                     client.removeListener("sync", syncListener);
                     done();
@@ -336,7 +326,7 @@ describe("MatrixClient", function() {
                 if (state === "ERROR" && httpLookups.length > 0) {
                     expect(httpLookups.length).toEqual(3);
                     expect(client.retryImmediately()).toBe(true);
-                    clock.tick(1);
+                    jest.advanceTimersByTime(1);
                 } else if (state === "PREPARED" && httpLookups.length === 0) {
                     client.removeListener("sync", syncListener);
                     done();
@@ -353,7 +343,7 @@ describe("MatrixClient", function() {
         function syncChecker(expectedStates, done) {
             return function syncListener(state, old) {
                 const expected = expectedStates.shift();
-                console.log(
+                logger.log(
                     "'sync' curr=%s old=%s EXPECT=%s", state, old, expected,
                 );
                 if (!expected) {
@@ -367,7 +357,7 @@ describe("MatrixClient", function() {
                     done();
                 }
                 // standard retry time is 5 to 10 seconds
-                clock.tick(10000);
+                jest.advanceTimersByTime(10000);
             };
         }
 

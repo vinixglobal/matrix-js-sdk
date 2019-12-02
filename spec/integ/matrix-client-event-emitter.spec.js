@@ -4,7 +4,6 @@ const sdk = require("../..");
 const HttpBackend = require("matrix-mock-request");
 const utils = require("../test-utils");
 
-import expect from 'expect';
 import Promise from 'bluebird';
 
 describe("MatrixClient events", function() {
@@ -15,7 +14,6 @@ describe("MatrixClient events", function() {
     const selfAccessToken = "aseukfgwef";
 
     beforeEach(function() {
-        utils.beforeEach(this); // eslint-disable-line no-invalid-this
         httpBackend = new HttpBackend();
         sdk.request(httpBackend.requestFn);
         client = sdk.createClient({
@@ -157,7 +155,7 @@ describe("MatrixClient events", function() {
                     return;
                 }
 
-                expect(event.event).toEqual(SYNC_DATA.presence.events[0]);
+                expect(event.event).toMatch(SYNC_DATA.presence.events[0]);
                 expect(user.presence).toEqual(
                     SYNC_DATA.presence.events[0].content.presence,
                 );
@@ -219,7 +217,7 @@ describe("MatrixClient events", function() {
             client.on("RoomState.events", function(event, state) {
                 eventsInvokeCount++;
                 const index = roomStateEventTypes.indexOf(event.getType());
-                expect(index).toNotEqual(
+                expect(index).not.toEqual(
                     -1, "Unexpected room state event type: " + event.getType(),
                 );
                 if (index >= 0) {
@@ -302,11 +300,32 @@ describe("MatrixClient events", function() {
         });
 
         it("should emit Session.logged_out on M_UNKNOWN_TOKEN", function() {
-            httpBackend.when("GET", "/sync").respond(401, { errcode: 'M_UNKNOWN_TOKEN' });
+            const error = { errcode: 'M_UNKNOWN_TOKEN' };
+            httpBackend.when("GET", "/sync").respond(401, error);
 
             let sessionLoggedOutCount = 0;
-            client.on("Session.logged_out", function(event, member) {
+            client.on("Session.logged_out", function(errObj) {
                 sessionLoggedOutCount++;
+                expect(errObj.data).toEqual(error);
+            });
+
+            client.startClient();
+
+            return httpBackend.flushAllExpected().then(function() {
+                expect(sessionLoggedOutCount).toEqual(
+                    1, "Session.logged_out fired wrong number of times",
+                );
+            });
+        });
+
+        it("should emit Session.logged_out on M_UNKNOWN_TOKEN (soft logout)", function() {
+            const error = { errcode: 'M_UNKNOWN_TOKEN', soft_logout: true };
+            httpBackend.when("GET", "/sync").respond(401, error);
+
+            let sessionLoggedOutCount = 0;
+            client.on("Session.logged_out", function(errObj) {
+                sessionLoggedOutCount++;
+                expect(errObj.data).toEqual(error);
             });
 
             client.startClient();

@@ -32,6 +32,8 @@ const Group = require('./models/group');
 const utils = require("./utils");
 const Filter = require("./filter");
 const EventTimeline = require("./models/event-timeline");
+const PushProcessor = require("./pushprocessor");
+import logger from './logger';
 
 import {InvalidStoreError} from './errors';
 
@@ -58,7 +60,7 @@ function debuglog(...params) {
     if (!DEBUG) {
         return;
     }
-    console.log(...params);
+    logger.log(...params);
 }
 
 
@@ -116,17 +118,25 @@ function SyncApi(client, opts) {
  */
 SyncApi.prototype.createRoom = function(roomId) {
     const client = this.client;
+    const {
+        timelineSupport,
+        unstableClientRelationAggregation,
+    } = client;
     const room = new Room(roomId, client, client.getUserId(), {
         lazyLoadMembers: this.opts.lazyLoadMembers,
         pendingEventOrdering: this.opts.pendingEventOrdering,
-        timelineSupport: client.timelineSupport,
+        timelineSupport,
+        unstableClientRelationAggregation,
     });
-    client.reEmitter.reEmit(room, ["Room.name", "Room.timeline", "Room.redaction",
+    client.reEmitter.reEmit(room, ["Room.name", "Room.timeline",
+                          "Room.redaction",
+                          "Room.redactionCancelled",
                           "Room.receipt", "Room.tags",
                           "Room.timelineReset",
                           "Room.localEchoUpdated",
                           "Room.accountData",
                           "Room.myMembership",
+                          "Room.replaceEvent",
                          ]);
     this._registerStateListeners(room);
     return room;
@@ -386,7 +396,7 @@ SyncApi.prototype._peekPoll = function(peekRoom, token) {
         peekRoom.addLiveEvents(events);
         self._peekPoll(peekRoom, res.end);
     }, function(err) {
-        console.error("[%s] Peek poll failed: %s", peekRoom.roomId, err);
+        logger.error("[%s] Peek poll failed: %s", peekRoom.roomId, err);
         setTimeout(function() {
             self._peekPoll(peekRoom, token);
         }, 30 * 1000);
@@ -445,6 +455,16 @@ SyncApi.prototype._wasLazyLoadingToggled = async function(lazyLoadMembers) {
     return false;
 };
 
+SyncApi.prototype._shouldAbortSync = function(error) {
+    if (error.errcode === "M_UNKNOWN_TOKEN") {
+        // The logout already happened, we just need to stop.
+        logger.warn("Token no longer valid - assuming logout");
+        this.stop();
+        return true;
+    }
+    return false;
+};
+
 /**
  * Main entry point
  */
@@ -478,7 +498,8 @@ SyncApi.prototype.sync = function() {
 
             client.pushRules = result;
         } catch (err) {
-            console.error("Getting push rules failed", err);
+            logger.error("Getting push rules failed", err);
+            if (self._shouldAbortSync(err)) return;
             // wait for saved sync to complete before doing anything else,
             // otherwise the sync state will end up being incorrect
             debuglog("Waiting for saved sync before retrying push rules...");
@@ -505,7 +526,7 @@ SyncApi.prototype.sync = function() {
                     );
                     debuglog("Created and stored lazy load sync filter");
                 } catch (err) {
-                    console.error(
+                    logger.error(
                         "Creating and storing lazy load sync filter failed",
                         err,
                     );
@@ -529,7 +550,7 @@ SyncApi.prototype.sync = function() {
             // we leave the state as 'ERROR' which isn't great since this normally means
             // we're retrying. The client must be stopped before clearing the stores anyway
             // so the app should stop the client, clear the store and start it again.
-            console.warn("InvalidStoreError: store is not usable: stopping sync.");
+            logger.warn("InvalidStoreError: store is not usable: stopping sync.");
             return;
         }
         if (this.opts.lazyLoadMembers && this.opts.crypto) {
@@ -540,7 +561,7 @@ SyncApi.prototype.sync = function() {
             await this.client._storeClientOptions();
             debuglog("Stored client options");
         } catch (err) {
-            console.error("Storing client options failed", err);
+            logger.error("Storing client options failed", err);
             throw err;
         }
 
@@ -563,7 +584,8 @@ SyncApi.prototype.sync = function() {
                 getFilterName(client.credentials.userId), filter,
             );
         } catch (err) {
-            console.error("Getting filter failed", err);
+            logger.error("Getting filter failed", err);
+            if (self._shouldAbortSync(err)) return;
             // wait for saved sync to complete before doing anything else,
             // otherwise the sync state will end up being incorrect
             debuglog("Waiting for saved sync before retrying filter...");
@@ -609,7 +631,7 @@ SyncApi.prototype.sync = function() {
                 return self._syncFromCache(savedSync);
             }
         }).catch(err => {
-            console.error("Getting saved sync failed", err);
+            logger.error("Getting saved sync failed", err);
         });
         // Now start the first incremental sync request: this can also
         // take a while so if we set it going now, we can wait for it
@@ -681,7 +703,7 @@ SyncApi.prototype._syncFromCache = async function(savedSync) {
     try {
         await this._processSyncResponse(syncEventData, data);
     } catch(e) {
-        console.error("Error processing cached sync", e.stack || e);
+        logger.error("Error processing cached sync", e.stack || e);
     }
 
     // Don't emit a prepared if we've bailed because the store is invalid:
@@ -699,7 +721,6 @@ SyncApi.prototype._syncFromCache = async function(savedSync) {
  * @param {boolean} syncOptions.hasSyncedBefore
  */
 SyncApi.prototype._sync = async function(syncOptions) {
-    debuglog("Starting sync request processing...");
     const client = this.client;
 
     if (!this._running) {
@@ -738,9 +759,7 @@ SyncApi.prototype._sync = async function(syncOptions) {
     // Reset after a successful sync
     this._failedSyncCount = 0;
 
-    debuglog("Storing sync data...");
     await client.store.setSyncData(data);
-    debuglog("Sync data stored");
 
     const syncEventData = {
         oldSyncToken: syncToken,
@@ -755,12 +774,11 @@ SyncApi.prototype._sync = async function(syncOptions) {
     }
 
     try {
-        debuglog("Processing sync response...");
         await this._processSyncResponse(syncEventData, data);
     } catch(e) {
         // log the exception with stack if we have it, else fall back
         // to the plain description
-        console.error("Caught /sync error", e.stack || e);
+        logger.error("Caught /sync error", e.stack || e);
 
         // Emit the exception for client handling
         this.client.emit("sync.unexpectedError", e);
@@ -874,11 +892,15 @@ SyncApi.prototype._onSyncError = function(err, syncOptions) {
         return;
     }
 
-    console.error("/sync error %s", err);
-    console.error(err);
+    logger.error("/sync error %s", err);
+    logger.error(err);
+
+    if(this._shouldAbortSync(err)) {
+        return;
+    }
 
     this._failedSyncCount++;
-    console.log('Number of consecutive failed sync requests:', this._failedSyncCount);
+    logger.log('Number of consecutive failed sync requests:', this._failedSyncCount);
 
     debuglog("Starting keep-alive");
     // Note that we do *not* mark the sync connection as
@@ -1009,8 +1031,9 @@ SyncApi.prototype._processSyncResponse = async function(
                 // honour push rules that were previously cached. Base rules
                 // will be updated when we recieve push rules via getPushRules
                 // (see SyncApi.prototype.sync) before syncing over the network.
-                if (accountDataEvent.getType() == 'm.push_rules') {
-                    client.pushRules = accountDataEvent.getContent();
+                if (accountDataEvent.getType() === 'm.push_rules') {
+                    const rules = accountDataEvent.getContent();
+                    client.pushRules = PushProcessor.rewriteDefaultRules(rules);
                 }
                 client.emit("accountData", accountDataEvent);
                 return accountDataEvent;
@@ -1022,8 +1045,26 @@ SyncApi.prototype._processSyncResponse = async function(
     if (data.to_device && utils.isArray(data.to_device.events) &&
         data.to_device.events.length > 0
        ) {
+        const cancelledKeyVerificationTxns = [];
         data.to_device.events
             .map(client.getEventMapper())
+            .map((toDeviceEvent) => { // map is a cheap inline forEach
+                // We want to flag m.key.verification.start events as cancelled
+                // if there's an accompanying m.key.verification.cancel event, so
+                // we pull out the transaction IDs from the cancellation events
+                // so we can flag the verification events as cancelled in the loop
+                // below.
+                if (toDeviceEvent.getType() === "m.key.verification.cancel") {
+                    const txnId = toDeviceEvent.getContent()['transaction_id'];
+                    if (txnId) {
+                        cancelledKeyVerificationTxns.push(txnId);
+                    }
+                }
+
+                // as mentioned above, .map is a cheap inline forEach, so return
+                // the unmodified event.
+                return toDeviceEvent;
+            })
             .forEach(
                 function(toDeviceEvent) {
                     const content = toDeviceEvent.getContent();
@@ -1032,11 +1073,19 @@ SyncApi.prototype._processSyncResponse = async function(
                             content.msgtype == "m.bad.encrypted"
                     ) {
                         // the mapper already logged a warning.
-                        console.log(
+                        logger.log(
                             'Ignoring undecryptable to-device event from ' +
                                 toDeviceEvent.getSender(),
                         );
                         return;
+                    }
+
+                    if (toDeviceEvent.getType() === "m.key.verification.start"
+                        || toDeviceEvent.getType() === "m.key.verification.request") {
+                        const txnId = content['transaction_id'];
+                        if (cancelledKeyVerificationTxns.includes(txnId)) {
+                            toDeviceEvent.flagCancelled();
+                        }
                     }
 
                     client.emit("toDeviceEvent", toDeviceEvent);
@@ -1088,7 +1137,6 @@ SyncApi.prototype._processSyncResponse = async function(
         const stateEvents =
             self._mapSyncEventsFormat(inviteObj.invite_state, room);
 
-        room.updateMyMembership("invite");
         self._processRoomEvents(room, stateEvents);
         if (inviteObj.isBrandNewRoom) {
             room.recalculate();
@@ -1098,6 +1146,7 @@ SyncApi.prototype._processSyncResponse = async function(
         stateEvents.forEach(function(e) {
             client.emit("event", e);
         });
+        room.updateMyMembership("invite");
     });
 
     // Handle joins
@@ -1126,8 +1175,6 @@ SyncApi.prototype._processSyncResponse = async function(
                 );
             }
         }
-
-        room.updateMyMembership("join");
 
         joinObj.timeline = joinObj.timeline || {};
 
@@ -1200,10 +1247,8 @@ SyncApi.prototype._processSyncResponse = async function(
             room.setSummary(joinObj.summary);
         }
 
-        // XXX: should we be adding ephemeralEvents to the timeline?
-        // It feels like that for symmetry with room.addAccountData()
-        // there should be a room.addEphemeralEvents() or similar.
-        room.addLiveEvents(ephemeralEvents);
+        // we deliberately don't add ephemeral events to the timeline
+        room.addEphemeralEvents(ephemeralEvents);
 
         // we deliberately don't add accountData to the timeline
         room.addAccountData(accountDataEvents);
@@ -1241,6 +1286,8 @@ SyncApi.prototype._processSyncResponse = async function(
         accountDataEvents.forEach(function(e) {
             client.emit("event", e);
         });
+
+        room.updateMyMembership("join");
     });
 
     // Handle leaves (e.g. kicked rooms)
@@ -1252,8 +1299,6 @@ SyncApi.prototype._processSyncResponse = async function(
             self._mapSyncEventsFormat(leaveObj.timeline, room);
         const accountDataEvents =
             self._mapSyncEventsFormat(leaveObj.account_data);
-
-        room.updateMyMembership("leave");
 
         self._processRoomEvents(room, stateEvents, timelineEvents);
         room.addAccountData(accountDataEvents);
@@ -1275,6 +1320,8 @@ SyncApi.prototype._processSyncResponse = async function(
         accountDataEvents.forEach(function(e) {
             client.emit("event", e);
         });
+
+        room.updateMyMembership("leave");
     });
 
     // update the notification timeline, if appropriate.

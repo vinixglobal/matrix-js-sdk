@@ -22,7 +22,7 @@ limitations under the License.
  */
 import Promise from 'bluebird';
 
-const logger = require("../../logger");
+import logger from '../../logger';
 const utils = require("../../utils");
 const olmlib = require("../olmlib");
 const DeviceInfo = require("../deviceinfo");
@@ -139,7 +139,7 @@ OlmEncryption.prototype.encryptMessage = async function(room, eventType, content
         }
     }
 
-    return await Promise.all(promises).return(encryptedContent);
+    return await Promise.all(promises).then(() => encryptedContent);
 };
 
 /**

@@ -24,6 +24,7 @@ limitations under the License.
  */
 
 "use strict";
+import logger from './logger';
 
 // we schedule a callback at least this often, to check if we've missed out on
 // some wall-clock time due to being suspended.
@@ -39,7 +40,7 @@ let _realCallbackKey;
 // each is an object with keys [runAt, func, params, key].
 const _callbackList = [];
 
-// var debuglog = console.log.bind(console);
+// var debuglog = logger.log.bind(logger);
 const debuglog = function() {};
 
 /**
@@ -47,7 +48,7 @@ const debuglog = function() {};
  *
  * Intended for use by the unit tests.
  *
- * @param {function} f function which should return a millisecond counter
+ * @param {function} [f] function which should return a millisecond counter
  *
  * @internal
  */
@@ -170,7 +171,7 @@ function _runCallbacks() {
         try {
             cb.func.apply(global, cb.params);
         } catch (e) {
-            console.error("Uncaught exception in callback function",
+            logger.error("Uncaught exception in callback function",
                           e.stack || e);
         }
     }

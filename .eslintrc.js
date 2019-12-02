@@ -12,8 +12,13 @@ module.exports = {
         // babel's transform-runtime converts references to ES6 globals such as
         // Promise and Map to core-js polyfills, so we can use ES6 globals.
         es6: true,
+        jest: true,
     },
     extends: ["eslint:recommended", "google"],
+    plugins: [
+        "babel",
+        "jest",
+    ],
     rules: {
         // rules we've always adhered to or now do
         "max-len": ["error", {
@@ -50,6 +55,7 @@ module.exports = {
         // rules we do not want from the google styleguide
         "object-curly-spacing": ["off"],
         "spaced-comment": ["off"],
+        "guard-for-in": ["off"],
 
         // in principle we prefer single quotes, but life is too short
         quotes: ["off"],
@@ -73,5 +79,10 @@ module.exports = {
             "asyncArrow": "always",
         }],
         "arrow-parens": "off",
+
+        // eslint's built in no-invalid-this rule breaks with class properties
+        "no-invalid-this": "off",
+        // so we replace it with a version that is class property aware
+        "babel/no-invalid-this": "error",
     }
 }

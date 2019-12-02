@@ -13,14 +13,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+import logger from '../../../../src/logger';
 
 try {
     global.Olm = require('olm');
 } catch (e) {
-    console.warn("unable to run device verification tests: libolm not available");
+    logger.warn("unable to run device verification tests: libolm not available");
 }
-
-import expect from 'expect';
 
 import DeviceInfo from '../../../../lib/crypto/deviceinfo';
 
@@ -30,12 +29,12 @@ const Olm = global.Olm;
 
 describe("QR code verification", function() {
     if (!global.Olm) {
-        console.warn('Not running device verification tests: libolm not present');
+        logger.warn('Not running device verification tests: libolm not present');
         return;
     }
 
-    beforeEach(async function() {
-        await Olm.init();
+    beforeAll(function() {
+        return Olm.init();
     });
 
     describe("showing", function() {
@@ -47,7 +46,7 @@ describe("QR code verification", function() {
                     return "device+ed25519+key";
                 },
             });
-            const spy = expect.createSpy().andCall((e) => {
+            const spy = jest.fn((e) => {
                 qrCode.done();
             });
             qrCode.on("show_qr_code", spy);
@@ -77,8 +76,8 @@ describe("QR code verification", function() {
                 "ABCDEFG",
             );
             const client = {
-                getStoredDevice: expect.createSpy().andReturn(device),
-                setDeviceVerified: expect.createSpy(),
+                getStoredDevice: jest.fn().mockReturnValue(device),
+                setDeviceVerified: jest.fn(),
             };
             const qrCode = new ScanQRCode(client);
             qrCode.on("confirm_user_id", ({userId, confirm}) => {
@@ -100,18 +99,18 @@ describe("QR code verification", function() {
 
         it("should error when the user ID doesn't match", async function() {
             const client = {
-                getStoredDevice: expect.createSpy(),
-                setDeviceVerified: expect.createSpy(),
+                getStoredDevice: jest.fn(),
+                setDeviceVerified: jest.fn(),
             };
             const qrCode = new ScanQRCode(client, "@bob:example.com", "ABCDEFG");
             qrCode.on("scan", ({done}) => {
                 done(QR_CODE_URL);
             });
-            const spy = expect.createSpy();
+            const spy = jest.fn();
             await qrCode.verify().catch(spy);
             expect(spy).toHaveBeenCalled();
-            expect(client.getStoredDevice).toNotHaveBeenCalled();
-            expect(client.setDeviceVerified).toNotHaveBeenCalled();
+            expect(client.getStoredDevice).not.toHaveBeenCalled();
+            expect(client.setDeviceVerified).not.toHaveBeenCalled();
         });
 
         it("should error if the key doesn't match", async function() {
@@ -129,18 +128,18 @@ describe("QR code verification", function() {
                 "ABCDEFG",
             );
             const client = {
-                getStoredDevice: expect.createSpy().andReturn(device),
-                setDeviceVerified: expect.createSpy(),
+                getStoredDevice: jest.fn().mockReturnValue(device),
+                setDeviceVerified: jest.fn(),
             };
             const qrCode = new ScanQRCode(client, "@alice:example.com", "ABCDEFG");
             qrCode.on("scan", ({done}) => {
                 done(QR_CODE_URL);
             });
-            const spy = expect.createSpy();
+            const spy = jest.fn();
             await qrCode.verify().catch(spy);
             expect(spy).toHaveBeenCalled();
             expect(client.getStoredDevice).toHaveBeenCalled();
-            expect(client.setDeviceVerified).toNotHaveBeenCalled();
+            expect(client.setDeviceVerified).not.toHaveBeenCalled();
         });
     });
 });

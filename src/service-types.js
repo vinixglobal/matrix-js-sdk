@@ -1,5 +1,5 @@
 /*
-Copyright 2017 Vector creations Ltd
+Copyright 2019 The Matrix.org Foundation C.I.C.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -14,12 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-import logger from '../src/logger';
-
-// try to load the olm library.
-try {
-    global.Olm = require('olm');
-    logger.log('loaded libolm');
-} catch (e) {
-    logger.warn("unable to run crypto tests: libolm not available");
-}
+export const SERVICE_TYPES = Object.freeze({
+    IS: 'SERVICE_TYPE_IS', // An Identity Service
+    IM: 'SERVICE_TYPE_IM', // An Integration Manager
+});
